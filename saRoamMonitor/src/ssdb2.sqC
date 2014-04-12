@@ -1,0 +1,1188 @@
+#include "sspublic.h"
+#include "sscontext.h"
+#include "ssdb2.h"
+#include "utilemb.h"
+
+#include <set>
+#include <string>
+#include <iostream>
+
+//set<string> 				m_physical_area;
+
+
+// 保存国内长途区号信息
+int	m_pstn_area_info[1000];
+
+// 保存手机号码的本外地与区号信息
+char	**m_msisdn_info;
+int	msisdn_num;
+
+// 保存号码的前缀信息 如12593、17951
+char	**m_numbers_prefix_info;
+int	numbers_prefix_info_num;
+
+// 保存手机号码前缀信息 如135、136
+int		mobile_prefix_type[MAX_MOBILE_PREFIX_NUM];
+int		mobile_prefix_num;
+char	**mobile_prefix_area;
+
+EXEC SQL INCLUDE SQLCA;
+
+
+int rowcounts(char *tablename)
+{
+	char st4[128];
+
+	EXEC SQL BEGIN DECLARE SECTION;
+			sqlint32 row_nums4;
+	EXEC SQL END DECLARE SECTION;
+
+
+	strcpy (st4, "SELECT count(*) from ");
+	strcat(st4, tablename);
+
+	EXEC SQL PREPARE s4 FROM :st4;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c4 CURSOR FOR s4;
+	EMB_SQL_CHECK("rowcounts");
+
+	EXEC SQL OPEN c4;
+	EMB_SQL_CHECK("OPEN CURSOR");
+
+	EXEC SQL FETCH c4 INTO :row_nums4;
+	if (SQLCODE != 0) row_nums4=0;
+
+	EXEC SQL CLOSE c4;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return row_nums4;
+}
+
+
+
+int count_rows(char *tablename, char *cond)
+{
+	char st3[128];
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		sqlint32 row_nums3;
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy (st3, "SELECT count(*) from ");
+	strcat(st3, tablename);
+	if(strlen(cond)>0) {
+		strcat(st3, " where ");
+		strcat(st3, cond);
+	}
+
+	EXEC SQL PREPARE s3 FROM :st3;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c3 CURSOR FOR s3;
+	EMB_SQL_CHECK("count_row");
+
+	EXEC SQL OPEN c3;
+	EMB_SQL_CHECK("OPEN CURSOR");
+
+	EXEC SQL FETCH c3 INTO :row_nums3;
+	if (SQLCODE != 0) row_nums3=0;
+
+	EXEC SQL CLOSE c3;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return row_nums3;
+}
+
+int read_conflict(char *tablename, char *cond)
+{
+	int pos;
+	int ci,rj;
+	int imsino;
+	char st2[256];
+
+	int curr_i=0; 
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		char msisdn[16];
+		char imsi[16];
+	EXEC SQL END DECLARE SECTION;
+
+
+	strcpy (st2, "SELECT msisdn,imsi FROM  ");
+	strcat(st2, tablename);
+	if(strlen(cond)>0) {
+		strcat(st2, " where ");
+		strcat(st2, cond);
+	}
+
+	EXEC SQL PREPARE s2 FROM :st2;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c2 CURSOR FOR s2;
+
+	EXEC SQL OPEN c2;
+	EMB_SQL_CHECK("OPEN CURSOR");
+
+	ci=rj=0;
+	do
+	{
+		EXEC SQL FETCH c2 INTO :msisdn, :imsi;
+		if (SQLCODE !=0) break;
+
+		imsino = atoi(imsi+6);
+		pos = imsino % (chk.context_capacity-chk.hash_tune);
+
+		if( Index[pos].offset == -1) Index[pos].offset = ci;
+		else {
+			if( Index[pos].redirect == -1) Index[pos].redirect = rj;
+			rj++;
+		}
+		ci++;
+
+    	
+    	if(curr_i%100000 == 0)
+		{
+			printf("初始化 curr_i=[%d]条\n", curr_i);
+		}
+						
+		curr_i++;
+
+
+	} while(1);
+
+	EXEC SQL CLOSE c2;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return rj;
+}
+
+int read_context(char *tablename, char *cond)
+{
+	int pos,next;
+	int ci,rj,conflict=0;
+	int imsino;
+	//char bcdimsi[6];
+	char bcdimsi[MAX_BCD_IMSI_LEN];
+	char st1[256];
+	
+	int curr_i=0; 
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		char msisdn_cond[16];
+		char imsi_cond[16];
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy (st1, "SELECT msisdn, imsi FROM ");
+	strcat(st1, tablename);
+	if(strlen(cond)>0) {
+		strcat(st1, " where ");
+		strcat (st1, cond);
+	}
+
+	EXEC SQL PREPARE s1 FROM :st1;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c1 CURSOR FOR s1;
+
+	EXEC SQL OPEN c1;
+	EMB_SQL_CHECK("OPEN CURSOR");
+
+	ci=rj=0;
+	do {
+		EXEC SQL FETCH c1 INTO :msisdn_cond, :imsi_cond;
+		if (SQLCODE !=0 || ci== chk.context_capacity) break;
+
+		//Char2BCD(msisdn_cond, context[ci].msisdn, MAX_BCD_MSISDN_NUMBERS);
+		memcpy(context[ci].msisdn,msisdn_cond, strlen(msisdn_cond));
+		//strcpy(context[ci].msisdn, msisdn_cond);
+
+		imsino = atoi(imsi_cond+6);
+		pos = imsino % (chk.context_capacity-chk.hash_tune);
+
+		//Char2BCD(imsi_cond+4,  bcdimsi, 11);
+		Char2BCD(imsi_cond,  bcdimsi, 15);
+
+		if( Index[pos].offset == -1) {
+			Index[pos].offset = ci;
+			/*bcopy(bcdimsi, Index[pos].imsi, 6);20090326*/
+			//memcpy(Index[pos].imsi,bcdimsi, 6);
+			memcpy(Index[pos].imsi,bcdimsi, MAX_BCD_IMSI_LEN);
+		}
+		else {
+			next=Index[pos].redirect;
+			if(next == -1)
+			{
+				Index[pos].redirect = rj;
+				/*bcopy(bcdimsi, redirect[rj].imsi, 6);20090326*/
+				//memcpy(redirect[rj].imsi,bcdimsi, 6);
+				memcpy(redirect[rj].imsi,bcdimsi, MAX_BCD_IMSI_LEN);
+				redirect[rj].offset = ci;
+			}
+			else
+			{
+				while(  redirect[next].redirect != -1) {
+					next=redirect[next].redirect;
+				}
+				redirect[next].redirect=rj;
+				/*bcopy(bcdimsi, redirect[rj].imsi, 6);20090326*/
+				//memcpy(redirect[rj].imsi,bcdimsi, 6);
+				memcpy(redirect[rj].imsi,bcdimsi, MAX_BCD_IMSI_LEN);
+				redirect[rj].offset=ci;
+			}
+			rj++;
+		}
+		ci++;
+		
+		
+		if(curr_i%100000 == 0)
+		{
+			printf("加载 curr_i=[%d]条\n", curr_i);
+		}
+		
+		curr_i++;
+						
+	} while(1);
+
+	EXEC SQL CLOSE c1;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return ci;
+}
+
+
+int read_physical_area_num(char *tablename, char *columnname)
+{
+	int rownum=0;
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		sqlint32 laccell_num;
+	EXEC SQL END DECLARE SECTION;
+
+
+	if(strlen(tablename)<=0 || strlen(columnname)<=0 ) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	strcpy (sqlstring, "SELECT count(distinct ");
+	strcat(sqlstring, columnname);
+	strcat(sqlstring, ") FROM ");
+	strcat(sqlstring, tablename);
+
+  printf("in read_physical_area sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s55 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c55 CURSOR FOR s55;
+
+	EXEC SQL OPEN c55;
+	EMB_SQL_CHECK("OPEN CURSOR");
+
+	do
+	{
+		EXEC SQL FETCH c55 INTO :laccell_num;
+		if (SQLCODE !=0) break;
+		rownum++;
+
+	} while(1);
+
+	
+	EXEC SQL CLOSE c55;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return laccell_num;
+}
+
+
+int read_physical_area(char *tablename, char *columnname)
+{
+	int rownum=0;
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char laccell[20];
+	EXEC SQL END DECLARE SECTION;
+
+
+	if(strlen(tablename)<=0 || strlen(columnname)<=0 ) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	strcpy (sqlstring, "SELECT distinct ");
+	strcat(sqlstring, columnname);
+	strcat(sqlstring, " FROM ");
+	strcat(sqlstring, tablename);
+	strcat(sqlstring, " ORDER BY ");
+	strcat(sqlstring, columnname);
+
+  printf("in read_physical_area sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s5 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c5 CURSOR FOR s5;
+
+	EXEC SQL OPEN c5;
+	EMB_SQL_CHECK("OPEN CURSOR");
+	
+	int i = 0;
+
+	do
+	{
+		EXEC SQL FETCH c5 INTO :laccell;
+		if (SQLCODE !=0) break;
+		
+		//m_physical_area.insert(laccell);
+		if(strlen(laccell) > 20)
+		{
+			printf("表[%s]中[%s]字段长度不能大于20字节\n", tablename, columnname);
+			printf("程序退出！\n");
+			
+			exit(-1);
+		}
+		strcpy(m_physical_area[i], laccell);
+		
+		rownum++;
+		i++;
+
+		/*cout  << "in read_physical_area, physical_area:"  << laccell <<endl;*/
+		/*printf("in read_physical_area, physical_area:%s \n",laccell);*/
+
+	} while(1);
+	
+	printf("in read_physical_area 总记录数(rownum)=%d \n",rownum);
+	
+	EXEC SQL CLOSE c5;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return rownum;
+}
+
+
+
+int read_pstn_area_info(char *tablename, char *columnname1, char *columnname2)
+{
+	int rownum=0;
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char area_code[10];
+		sqlint32 area_type;
+	EXEC SQL END DECLARE SECTION;
+
+
+	if(strlen(tablename)<=0 || strlen(columnname1)<=0 || strlen(columnname2)<=0) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	strcpy (sqlstring, "SELECT distinct ");
+	strcat(sqlstring, columnname1);
+	strcat(sqlstring, " , ");
+	strcat(sqlstring, columnname2);
+	strcat(sqlstring, " FROM ");
+	strcat(sqlstring, tablename);
+
+
+  printf("in read_pstn_area_info sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s10 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c10 CURSOR FOR s10;
+
+	EXEC SQL OPEN c10;
+	EMB_SQL_CHECK("OPEN CURSOR");
+	
+	int i = 0;
+
+	do
+	{
+		EXEC SQL FETCH c10 INTO :area_code, :area_type;
+		if (SQLCODE !=0) break;
+		
+		//printf("[%s]=[%d] \n", area_code, area_type);
+		m_pstn_area_info[atoi(area_code)] = area_type;
+		
+		rownum++;
+		i++;
+	} while(1);
+	
+	printf("in read_pstn_area_info 总记录数(rownum)=%d \n",rownum);
+	
+	EXEC SQL CLOSE c10;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return rownum;
+
+}
+
+
+int read_msisdn_info_num(char *tablename, char *columnname)
+{
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		sqlint32 row_nums;
+	EXEC SQL END DECLARE SECTION;
+
+
+	if(strlen(tablename)<=0 || strlen(columnname)<=0) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	strcpy (sqlstring, "SELECT count( distinct ");
+	strcat(sqlstring, columnname);
+	strcat(sqlstring, ") FROM ");
+	strcat(sqlstring, tablename);
+
+
+  printf("in read_msisdn_info_num sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s11 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c11 CURSOR FOR s11;
+
+	EXEC SQL OPEN c11;
+	EMB_SQL_CHECK("OPEN CURSOR");
+
+	do
+	{
+		EXEC SQL FETCH c11 INTO :row_nums;
+		if (SQLCODE !=0) break;
+
+	} while(1);
+
+	
+	EXEC SQL CLOSE c11;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+	
+	printf("in read_msisdn_info_num 总记录数(row_nums)=%d \n",row_nums);
+
+	return row_nums;	
+	
+}
+
+
+
+int read_msisdn_info(char *tablename, char *columnname1, char *columnname2, char *columnname3)
+{
+	int rownum=0;
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+	char msisdn_prefix[10];
+	char str_area_code[10];
+	sqlint32 int_area_type;
+	EXEC SQL END DECLARE SECTION;
+
+
+	if(strlen(tablename)<=0 || strlen(columnname1)<=0 || strlen(columnname2)<=0 || strlen(columnname3)<=0) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	memset(sqlstring, '\0', sizeof(sqlstring)); 
+	strcpy (sqlstring, "SELECT distinct ");
+	strcat(sqlstring, columnname1);
+	strcat(sqlstring, " , ");
+	strcat(sqlstring, columnname2);
+	strcat(sqlstring, " , ");
+	strcat(sqlstring, columnname3);
+	strcat(sqlstring, " FROM ");
+	strcat(sqlstring, tablename);
+	strcat(sqlstring, " order by ");
+	strcat(sqlstring, columnname1);
+
+
+  printf("in read_msisdn_info sqlstring=%s \n",sqlstring);
+
+  
+	EXEC SQL PREPARE s12 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c12 CURSOR FOR s12;
+
+	EXEC SQL OPEN c12;
+	EMB_SQL_CHECK("OPEN CURSOR");
+	
+	int i = 0;
+
+	do
+	{
+		EXEC SQL FETCH c12 INTO :msisdn_prefix, :str_area_code, :int_area_type;
+		//printf("SQLCODE=[%d]\n", SQLCODE);
+		if (SQLCODE !=0) break;
+		
+		char tmp[10];
+		memset(tmp, '\0', sizeof(tmp)); 
+		// 格式：号段（7位）+区号类型（1位）+区号代码（将“0”去掉，2-3位）
+		// 举例：1352161@1@10   1352162@1@551
+		sprintf(tmp, "%s@%d@%s", msisdn_prefix, int_area_type, str_area_code);
+		//printf("tmp=[%s]\n", tmp);
+		strcpy(m_msisdn_info[rownum], tmp);
+		
+		rownum++;
+		i++;
+	} while(1);
+	
+	printf("in read_msisdn_info 总记录数(rownum)=%d \n",rownum);
+	
+	EXEC SQL CLOSE c12;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return rownum;	
+	
+}
+
+
+
+int read_spec_services(char *tablename, char *columnname, string& access_numbers)
+{
+	int rownum=0;
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char access_number[30];
+	EXEC SQL END DECLARE SECTION;
+
+
+	//string access_numbers;
+
+	if(strlen(tablename)<=0 || strlen(columnname)<=0) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	memset(sqlstring, '\0', sizeof(sqlstring)); 
+	strcpy (sqlstring, "SELECT distinct ");
+	strcat(sqlstring, columnname);
+	strcat(sqlstring, " FROM ");
+	strcat(sqlstring, tablename);
+	strcat(sqlstring, " order by ");
+	strcat(sqlstring, columnname);
+
+
+  printf("in read_spec_services sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s13 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c13 CURSOR FOR s13;
+
+	EXEC SQL OPEN c13;
+	EMB_SQL_CHECK("OPEN CURSOR");
+	
+	int i = 0;
+
+	do
+	{
+		EXEC SQL FETCH c13 INTO :access_number;
+		if (SQLCODE !=0) break;
+		
+		if(rownum == 0)
+		{
+			access_numbers.append(",");
+		}		
+
+		access_numbers.append(access_number);
+		access_numbers.append(",");
+		
+		rownum++;
+		i++;
+
+		/*cout  << "in read_physical_area, physical_area:"  << laccell <<endl;*/
+		/*printf("in read_physical_area, physical_area:%s \n",laccell);*/
+
+	} while(1);
+	
+	printf("in read_spec_services 总记录数(rownum)=%d \n",rownum);
+	
+	EXEC SQL CLOSE c13;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	// 去掉最后一个“,”号
+	//access_numbers.erase(access_numbers.size()-1);
+	printf("in access_numbers=[%s]\n", access_numbers.c_str());
+
+	//return access_numbers;
+	//return (char*)(access_numbers.c_str());
+	
+	return 1;
+
+}
+
+
+int read_numbers_prefix_info_num(char *tablename, char *columnname)
+{
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		sqlint32 numbers_prefix_row_nums;
+	EXEC SQL END DECLARE SECTION;
+
+
+	if(strlen(tablename)<=0 || strlen(columnname)<=0) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	strcpy (sqlstring, "SELECT distinct count(");
+	strcat(sqlstring, columnname);
+	strcat(sqlstring, ") FROM ");
+	strcat(sqlstring, tablename);
+
+
+  printf("in read_numbers_prefix_info_num sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s14 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c14 CURSOR FOR s14;
+
+	EXEC SQL OPEN c14;
+	EMB_SQL_CHECK("OPEN CURSOR");
+
+	do
+	{
+		EXEC SQL FETCH c14 INTO :numbers_prefix_row_nums;
+		if (SQLCODE !=0) break;
+
+	} while(1);
+
+	
+	EXEC SQL CLOSE c14;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+	
+	printf("in read_numbers_prefix_info_num 总记录数(numbers_prefix_row_nums)=%d \n",numbers_prefix_row_nums);
+
+	return numbers_prefix_row_nums;	
+	
+}
+
+int read_numbers_prefix_info(char *tablename, char *columnname, string& numbers_prefixs)
+{
+	int rownum=0;
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char numbers_prefix[11];
+	EXEC SQL END DECLARE SECTION;
+
+	if(strlen(tablename)<=0 || strlen(columnname)<=0) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	memset(sqlstring, '\0', sizeof(sqlstring)); 
+	strcpy (sqlstring, "SELECT distinct ");
+	strcat(sqlstring, columnname);
+	strcat(sqlstring, " FROM ");
+	strcat(sqlstring, tablename);
+	strcat(sqlstring, " order by ");
+	strcat(sqlstring, columnname);
+
+
+  printf("in read_spec_services sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s15 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c15 CURSOR FOR s15;
+
+	EXEC SQL OPEN c15;
+	EMB_SQL_CHECK("OPEN CURSOR");
+	
+	int i = 0;
+
+	do
+	{
+		EXEC SQL FETCH c15 INTO :numbers_prefix;
+		if (SQLCODE !=0) break;	
+
+		numbers_prefixs.append(numbers_prefix);
+		numbers_prefixs.append(",");
+		
+		rownum++;
+		i++;
+
+	} while(1);
+	
+	printf("in read_numbers_prefix_info 总记录数(rownum)=%d \n",rownum);
+	
+	EXEC SQL CLOSE c15;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	// 去掉最后一个“,”号
+	numbers_prefixs.erase(numbers_prefixs.size()-1);
+	printf("in numbers_prefixs=[%s]\n", numbers_prefixs.c_str());
+	
+	return 1;
+	
+}
+
+
+int read_mobile_prefix_num(char *tablename, char *columnname, char *cond)
+{
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		sqlint32 mobile_prefix_nums;
+	EXEC SQL END DECLARE SECTION;
+
+	if(strlen(tablename)<=0 || strlen(columnname)<=0) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	strcpy (sqlstring, "SELECT count(distinct ");
+	strcat(sqlstring, columnname);
+	strcat(sqlstring, ") FROM ");
+	strcat(sqlstring, tablename);
+	if(strlen(cond)>0) {
+		strcat(sqlstring, " where ");
+		strcat(sqlstring, cond);
+	}
+
+  printf("in read_mobile_prefix_num sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s16 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c16 CURSOR FOR s16;
+
+	EXEC SQL OPEN c16;
+	EMB_SQL_CHECK("OPEN CURSOR");
+
+	do
+	{
+		EXEC SQL FETCH c16 INTO :mobile_prefix_nums;
+		if (SQLCODE !=0) break;
+
+	} while(1);
+	
+	EXEC SQL CLOSE c16;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+	
+	printf("in read_mobile_prefix_num 总记录数(mobile_prefix_nums)=%d \n",mobile_prefix_nums);
+
+	return mobile_prefix_nums;	
+	
+}
+
+int read_mobile_prefix(char *tablename, char *columnname, char *cond)
+{
+	int rownum=0;
+	char sqlstring[256];
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char prefix_number[10];
+		sqlint32  prefix_type;
+	EXEC SQL END DECLARE SECTION;
+
+
+	if(strlen(tablename)<=0 || strlen(columnname)<=0 ) {
+		printf(" tablename or columnname can not be null \n");
+		exit(0);
+	}
+	
+	strcpy (sqlstring, "SELECT distinct ");
+	strcat(sqlstring, columnname);
+	strcat(sqlstring, " FROM ");
+	strcat(sqlstring, tablename);
+	if(strlen(cond)>0) {
+		strcat(sqlstring, " where ");
+		strcat(sqlstring, cond);
+	}
+	strcat(sqlstring, " ORDER BY ");
+	strcat(sqlstring, columnname);
+  printf("in read_mobile_prefix sqlstring=%s \n",sqlstring);
+  
+	EXEC SQL PREPARE s17 FROM :sqlstring;
+	EMB_SQL_CHECK("PREPARE STATEMENT");
+
+	EXEC SQL DECLARE c17 CURSOR FOR s17;
+
+	EXEC SQL OPEN c17;
+	EMB_SQL_CHECK("OPEN CURSOR");
+	
+	do
+	{
+		EXEC SQL FETCH c17 INTO :prefix_number, :prefix_type;
+		if (SQLCODE !=0) break;
+		
+		if(strlen(prefix_number) > 10)
+		{
+			printf("表[%s]中[%s]字段长度不能大于10字节\n", tablename, columnname);
+			printf("程序退出！\n");
+			
+			exit(-1);
+		}
+		strcpy(mobile_prefix_area[rownum], prefix_number);
+		mobile_prefix_type[rownum] = prefix_type;
+		
+		rownum++;
+	} while(1);
+	
+	EXEC SQL CLOSE c17;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	return rownum;
+}
+
+
+int load_table(char *filename, char *tablename)
+{
+
+	int             rc=1;
+	printf("load_table rc=%d \n",rc);
+	return rc;
+
+
+	struct sqldcol	DataDescriptor;
+	struct sqlchar	*ActionString;
+	struct sqlchar	*FileTypeMod;
+	char		impStatement[32];
+	char     	FileType[] = SQL_DEL;
+	char 		msg[64];
+
+	struct sqlu_media_list	DataFileList;
+	struct sqlu_media_list	*pLobPathList;
+	struct sqluload_in			InputInfo;
+	struct sqluload_out		OutputInfo;
+	struct sqlu_media_list	*pWorkDirectoryList = NULL;
+	struct sqlu_media_list	*pCopyTargetList;
+	char						LocalMsgFileName[]  = "LOADMSG";
+	char						RemoteMsgFileName[] = "RLOADMSG";
+	short						CallerAction;
+	sqlint32				*pNullIndicators =NULL;
+	void						*pReserved = NULL;
+
+	strcpy(impStatement,"INSERT INTO ");
+	strcat(impStatement,tablename);
+
+	memset(&DataFileList, 0, sizeof(struct sqlu_media_list));
+	memset(&InputInfo, 0, sizeof(struct sqluload_in));
+	memset(&OutputInfo, 0, sizeof(struct sqluload_out));
+
+	FileTypeMod = (struct sqlchar *)malloc(strlen("lobsinfile") + sizeof (struct sqlchar));
+	FileTypeMod->length = strlen("lobsinfile");
+	strncpy (FileTypeMod->data, "lobsinfile", FileTypeMod->length);
+
+	DataDescriptor.dcolmeth = SQL_METH_D;
+
+	ActionString = (struct sqlchar *)malloc(strlen(impStatement)+sizeof (struct sqlchar));
+	ActionString->length = strlen(impStatement);
+	strncpy (ActionString->data, impStatement, strlen(impStatement));
+
+	DataFileList.media_type = SQLU_SERVER_LOCATION;
+	DataFileList.sessions = 1;
+	DataFileList.target.location = (sqlu_location_entry *) malloc
+		(sizeof(sqlu_location_entry) * DataFileList.sessions);
+	strcpy (DataFileList.target.location->location_entry, filename);
+
+	pLobPathList = NULL;
+	CallerAction = SQLU_INITIAL;
+
+	InputInfo.sizeOfStruct = SQLULOAD_IN_SIZE; 
+	InputInfo.savecnt = 0;                     
+	InputInfo.restartcnt = 0;                  
+	InputInfo.rowcnt = 0;                      
+	InputInfo.warningcnt = 0;                  
+	InputInfo.data_buffer_size = 0;            
+	InputInfo.sort_buffer_size = 0;            
+	InputInfo.hold_quiesce = 0;                
+	InputInfo.restartphase = ' ';              
+	InputInfo.statsopt = SQLU_STATS_NONE;      
+	InputInfo.indexing_mode = SQLU_INX_AUTOSELECT; 
+
+	OutputInfo.sizeOfStruct = SQLULOAD_OUT_SIZE;
+	pCopyTargetList = NULL;
+
+	OutputInfo.sizeOfStruct = SQLULOAD_OUT_SIZE;
+	sqluload (&DataFileList,
+						 pLobPathList,
+						 &DataDescriptor,
+						 ActionString,
+						 FileType,
+						 FileTypeMod,
+						 LocalMsgFileName,
+						 RemoteMsgFileName,
+						 CallerAction,
+						 &InputInfo,
+						 &OutputInfo,
+						 pWorkDirectoryList,
+						 pCopyTargetList,
+						 pNullIndicators,
+						 pReserved,
+						 &sqlca);
+
+	sprintf(msg, "LOADing table %s",tablename);
+	EMB_SQL_CHECK(msg);
+
+	printf ("Rows loaded %d\n", OutputInfo.rowsCommitted);
+	free (ActionString);
+
+	return (OutputInfo.rowsCommitted);
+}
+
+
+int export_table (char *tablename, char *filename)
+{
+	struct sqldcol		DataDescriptor;
+	struct sqlchar		*ActionString;
+	struct sqlchar		*FileTypeMod;
+	struct sqluexpt_out  outputInfo;
+	char        		statement[32];
+	char        		msgfile_x[] = "EXPMSG.TXT";
+	char        		FileType[] = SQL_DEL;
+
+	strcpy(statement, "select * from ");
+	strcat(statement, tablename);
+
+	memset(&outputInfo, 0, sizeof(struct sqluload_out));
+
+	outputInfo.sizeOfStruct = SQLUEXPT_OUT_SIZE;
+
+	ActionString = (struct sqlchar *)malloc(strlen(statement) + sizeof (struct sqlchar));
+	ActionString->length = strlen(statement);
+	strncpy (ActionString->data, statement, strlen(statement));
+
+	FileTypeMod = (struct sqlchar *)malloc(strlen("lobsinfile") + sizeof (struct sqlchar));
+	FileTypeMod->length = strlen("lobsinfile");
+	strncpy (FileTypeMod->data, "lobsinfile", FileTypeMod->length);
+
+	DataDescriptor.dcolmeth = SQL_METH_D;
+
+	sqluexpr (filename, NULL, NULL, &DataDescriptor, ActionString,
+		FileType, FileTypeMod, msgfile_x, 0, &outputInfo, NULL, &sqlca);
+	EMB_SQL_CHECK("EXPORTing table");
+
+	printf ("Rows exported %d\n", outputInfo.rowsExported);
+
+
+	free (ActionString);
+	return(outputInfo.rowsExported);
+	
+	return 0;
+}
+
+
+int export_data (char *sqlstring, char *filename)
+{
+	SQL_API_RC rc = SQL_RC_OK;
+  char dataFileName[256];
+  char msgFileName[128];
+  struct sqldcol dataDescriptor;
+  char actionString[256];
+  struct sqllob *pAction;
+  struct db2ExportOut outputInfo;
+  struct db2ExportStruct exportParmStruct;
+
+  
+	  /* export data */
+  dataDescriptor.dcolmeth = SQL_METH_D;
+  strcpy(actionString, sqlstring);
+  strcpy(dataFileName, filename);
+  pAction = (struct sqllob *)malloc(sizeof(sqluint32) +
+                                     sizeof(actionString) + 1);
+  pAction->length = strlen(actionString);
+  strcpy(pAction->data, actionString);
+  strcpy(msgFileName, "tbexport.MSG");
+  
+  exportParmStruct.piDataFileName    = dataFileName;
+  exportParmStruct.piLobPathList     = NULL;
+  exportParmStruct.piLobFileList     = NULL;
+  exportParmStruct.piDataDescriptor  = &dataDescriptor;
+  exportParmStruct.piActionString    = pAction;
+  exportParmStruct.piFileType        = SQL_DEL;
+  exportParmStruct.piFileTypeMod     = NULL;
+  exportParmStruct.piMsgFileName     = msgFileName;
+  exportParmStruct.iCallerAction     = SQLU_INITIAL;
+  exportParmStruct.poExportInfoOut   = &outputInfo;
+
+  printf("\n    Export data.\n");
+  printf("    client destination file name: %s\n", dataFileName);
+  printf("    action                      : %s\n", actionString);
+  printf("    client message file name    : %s\n", msgFileName);
+
+  /* export data */
+  db2Export(db2Version820,
+            &exportParmStruct,
+            &sqlca);
+
+  //DB2_API_CHECK("data -- export");
+
+  /* free memory allocated */
+  free(pAction);
+  
+  return 0;
+}
+
+int import_table(char *filename, char *tablename)
+{
+	struct sqldcol       columnData;
+	struct sqlchar       *columnStringPointer;
+	struct sqluexpt_out  outputInfo;
+	struct sqluimpt_in   impInput;
+	struct sqluimpt_out  impOutput;
+
+	char        impStatement[64];
+	char        msgfile_x[] = "EXPMSG.TXT";
+	char        msgfile_m[] = "IMPMSG.TXT";
+	char        fileFormat[] = "DEL";
+
+	if(!strcmp(filename,"/dev/null")) strcpy(impStatement, "replace into ");
+	else strcpy(impStatement, "insert into ");
+
+	strcat(impStatement, tablename);
+
+	outputInfo.sizeOfStruct = SQLUEXPT_OUT_SIZE;
+	impInput.sizeOfStruct = SQLUIMPT_IN_SIZE;
+	impOutput.sizeOfStruct = SQLUIMPT_OUT_SIZE;
+	impInput.restartcnt = impInput.commitcnt = 0;
+
+	columnData.dcolmeth = 'D';
+
+	columnStringPointer = (struct sqlchar *)malloc(strlen(impStatement) + sizeof (struct sqlchar));
+	columnStringPointer->length = strlen(impStatement);
+	strncpy (columnStringPointer->data, impStatement, strlen(impStatement));
+
+	if(!strcmp(filename,"/dev/null"))
+		sqluimpr ("/dev/null", NULL, &columnData, columnStringPointer, fileFormat,
+			NULL, msgfile_m, 0, &impInput, &impOutput, NULL, NULL, &sqlca);
+
+	else
+		sqluimpr (tablename, NULL, &columnData, columnStringPointer, fileFormat,
+			NULL, msgfile_m, 0, &impInput, &impOutput, NULL, NULL, &sqlca);
+
+	EMB_SQL_CHECK("importing table");
+
+	free (columnStringPointer);
+	return 0;
+}
+
+
+int clear_table(char *tablename)
+{
+	import_table("/dev/null", tablename);
+	return 0;
+}
+
+
+
+
+int connect_db(char *db, char *user, char *pass)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char dbname[12];
+		char username[16];
+		char password[10];
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy (dbname, db);
+	strcpy (username, user);
+	strcpy (password, pass);
+
+	EXEC SQL CONNECT TO :dbname USER :username USING :password;
+	EMB_SQL_CHECK("CONNECT TO SAMPLE");
+
+	return 0;
+}
+
+
+int close_db(void)
+{
+	EXEC SQL CONNECT RESET;
+	EMB_SQL_CHECK("CONNECT RESET");
+
+	return 0;
+}
+
+
+int create_table( void )
+{
+	EXEC SQL CREATE TABLE TBDEFINE (
+		Col1     SMALLINT,
+		Col2     CHAR(7),
+		Col3     VARCHAR(7) ,
+		Col4     DEC(9,2),
+		Col5     DATE,
+		Col6     BLOB(5000),
+		Col7     CLOB(5000));
+
+	EMB_SQL_CHECK( "CREATE TABLE");
+
+	EXEC SQL COMMIT;
+	EMB_SQL_CHECK( "COMMIT");
+
+	return(0);
+}
+
+
+int drop_table( void )
+{
+	EXEC SQL DROP TABLE dw_test;
+	EMB_SQL_CHECK( "DROP TABLE");
+
+	EXEC SQL COMMIT;
+	EMB_SQL_CHECK( "COMMIT");
+
+	return(0);
+}
+
+
+
+
+int exec_sql(char sqlInput[1000])
+{
+	int counter = 0;
+	struct sqlda *sqldaPointer;
+	EXEC SQL BEGIN DECLARE SECTION;
+		char sqlStatement[1000];
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy (sqlStatement, sqlInput);
+
+	init_da (&sqldaPointer, 1);
+	EXEC SQL PREPARE statement1 from :sqlStatement;
+	EMB_SQL_CHECK("PREPARE");
+
+	EXEC SQL DESCRIBE statement1 INTO :*sqldaPointer;
+
+	init_da (&sqldaPointer, sqldaPointer->sqld);
+
+	EXEC SQL DESCRIBE statement1 INTO :*sqldaPointer;
+	EMB_SQL_CHECK("DESCRIBE");
+
+	alloc_host_vars (sqldaPointer);
+
+	EXEC SQL DECLARE pcurs CURSOR FOR statement1;
+	EXEC SQL OPEN pcurs;
+	EMB_SQL_CHECK("OPEN");
+
+	EXEC SQL FETCH pcurs USING DESCRIPTOR :*sqldaPointer;
+	EMB_SQL_CHECK("FETCH");
+
+	display_col_titles (sqldaPointer);
+	while (SQLCODE == 0) {
+		counter++;
+		display_da (sqldaPointer);
+		EXEC SQL FETCH pcurs USING DESCRIPTOR :*sqldaPointer;
+	}
+
+	EXEC SQL CLOSE pcurs;
+	EMB_SQL_CHECK("CLOSE CURSOR");
+
+	printf ("\n  %d record(s) selected\n\n", counter);
+
+	free_da(sqldaPointer);
+	return 0;
+}
+

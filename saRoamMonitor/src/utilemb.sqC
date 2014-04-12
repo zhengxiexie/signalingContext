@@ -1,0 +1,539 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <sql.h>
+#include <sqlenv.h>
+#include <sqlda.h>
+#include <sqlca.h>
+#include <string.h>
+#include <ctype.h>
+#include "utilemb.h"
+
+
+
+int SqlInfoPrint( char *         appMsg, 
+                  struct sqlca * pSqlca,
+                  int            line,      
+                  char *         file )
+{   int   rc = 0;
+
+    char  sqlInfo[1024];
+    char  sqlInfoToken[1024];
+
+    char  sqlstateMsg[1024];
+    char  errorMsg[1024];
+
+
+    if (pSqlca->sqlcode != 0 && pSqlca->sqlcode != 100)
+    {   strcpy(sqlInfo, "");
+
+        if( pSqlca->sqlcode < 0)
+        {   sprintf( sqlInfoToken, "\n---- error report ----\n");
+            strcat( sqlInfo, sqlInfoToken);
+        } 
+        else 
+        {   sprintf( sqlInfoToken, "\n---- warning report ----\n");
+            strcat( sqlInfo, sqlInfoToken);
+        } 
+
+        sprintf( sqlInfoToken, "  app. message      = %s\n", appMsg);
+        strcat( sqlInfo, sqlInfoToken);	
+        sprintf( sqlInfoToken, "  line              = %d\n", line);
+        strcat( sqlInfo, sqlInfoToken);	
+        sprintf( sqlInfoToken, "  file              = %s\n", file);
+        strcat( sqlInfo, sqlInfoToken);	
+        sprintf( sqlInfoToken, "  SQLCODE           = %ld\n", pSqlca->sqlcode);
+        strcat( sqlInfo, sqlInfoToken);		
+ 
+        
+        rc = sqlaintp( errorMsg, 1024, 80, pSqlca);
+        	
+        if( rc > 0)
+        {   sprintf( sqlInfoToken, "%s\n", errorMsg);
+            strcat( sqlInfo, sqlInfoToken);
+        } 
+ 
+        
+        rc = sqlogstt( sqlstateMsg, 1024, 80, pSqlca->sqlstate);
+        if (rc == 0)
+        {   sprintf( sqlInfoToken, "%s\n", sqlstateMsg);
+            strcat( sqlInfo, sqlInfoToken);
+        }  	
+
+
+        if( pSqlca->sqlcode < 0)
+        {   sprintf( sqlInfoToken, "--- end error report ---\n");
+            strcat( sqlInfo, sqlInfoToken);
+
+            printf("%s", sqlInfo);
+            return 1;
+        } 
+        else 
+        {   sprintf( sqlInfoToken, "--- end warning report ---\n");
+            strcat( sqlInfo, sqlInfoToken);
+ 
+            printf("%s", sqlInfo);
+            return 0;
+        } 
+    } 
+
+    return 0;
+}
+
+void TransRollback( )
+{   struct sqlca sqlca;
+    int        rc = 0;
+
+    
+    printf( "\nRolling back the transaction ...\n") ;
+    EXEC SQL ROLLBACK; 
+    rc = SqlInfoPrint( "ROLLBACK", &sqlca, __LINE__, __FILE__);
+    if( rc == 0)
+    {   printf( "The transaction was rolled back.\n") ;
+    }		
+    
+}
+
+
+
+
+int  CmdLineArgsCheck1( int argc,
+                        char * argv[],
+                        char dbAlias[],
+                        char user[],
+                        char pswd[] )
+{   int rc = 0;
+
+    switch (argc)
+    {    case 1:
+             strcpy(dbAlias, "sample");
+             strcpy(user, "");
+             strcpy(pswd, "");
+             break;
+         case 2:
+             strcpy(dbAlias, argv[1]);
+             strcpy(user, "");
+             strcpy(pswd, "");
+             break;
+         case 4:
+             strcpy(dbAlias, argv[1]);
+             strcpy(user, argv[2]);
+             strcpy(pswd, argv[3]);
+             break;    
+         default:
+             printf( "\nUSAGE: %s [dbAlias [userid  passwd]]]\n", argv[0] ) ;
+             rc = 1;
+             break;
+    }  
+
+    return (rc);
+}
+
+int  CmdLineArgsCheck2( int argc,
+                        char * argv[],
+                        char dbAlias[],
+                        char user[],
+                        char pswd[],
+                        char remoteNodeName[] )
+{   int rc = 0;
+
+    switch (argc)
+    {    case 1:
+             strcpy(dbAlias, "sample");
+             strcpy(user, "");
+             strcpy(pswd, "");
+             strcpy(remoteNodeName, "");   
+             break;
+         case 2:
+             strcpy(dbAlias, argv[1]);
+             strcpy(user, "");
+             strcpy(pswd, "");
+             strcpy(remoteNodeName, "");   	     
+             break;
+         case 4:
+             strcpy(dbAlias, argv[1]);
+             strcpy(user, argv[2]);
+             strcpy(pswd, argv[3]);
+             strcpy(remoteNodeName, "");   	     
+             break;   
+         case 5:
+             strcpy(dbAlias, argv[1]);
+             strcpy(user, argv[2]);
+             strcpy(pswd, argv[3]);
+             strcpy(remoteNodeName, argv[4]);   	     
+             break;   	     
+         default:
+             printf( "\nUSAGE: %s [dbAlias [userid passwd [remoteNodeName]]]\n",
+                     argv[0] ) ;
+             rc = 1;
+             break;
+    }  
+
+    return (rc);
+}
+
+int EmbAppInit( char paramDbAlias[],
+                char paramUser[],
+                char paramPswd[] )
+{   struct sqlca sqlca;
+    int        rc = 0;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        char dbAlias[15] ;
+        char user[15] ; 
+        char pswd[15] ; 
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy( dbAlias, paramDbAlias) ;
+    strcpy( user, paramUser) ;    
+    strcpy( pswd, paramPswd) ;    
+
+    printf( "\nConnecting to %s ...\n", dbAlias ) ;
+    if ( strlen( user) == 0)
+    {   EXEC SQL CONNECT TO :dbAlias;
+        EMB_SQL_CHECK( "CONNECT");
+    }
+    else 
+    {   EXEC SQL CONNECT TO :dbAlias USER :user USING :pswd;
+        EMB_SQL_CHECK( "CONNECT");
+    }
+    printf( "Connected to %s.\n\n", dbAlias ) ;      
+ 
+    return( 0 ) ;
+}
+
+int EmbAppTerm( char * dbAlias )
+{   struct sqlca sqlca;
+    int        rc = 0;
+    
+    printf( "\nDisconnecting from %s ...\n", dbAlias ) ;
+    EXEC SQL CONNECT RESET ;
+    EMB_SQL_CHECK( "CONNECT RESET") ;
+    printf( "Disconnected from %s.\n", dbAlias ) ;    
+
+    return( 0 ) ;
+}
+
+
+
+
+
+void init_da (struct sqlda **DAPointer, int DAsqln) {
+   *DAPointer = (struct sqlda *) malloc (SQLDASIZE(DAsqln));
+   if (*DAPointer == NULL) {
+      fprintf (stderr, "\ninit_da : out of memory error.\n");
+      exit (-1);
+   }
+   strncpy((*DAPointer)->sqldaid, "SQLDA   ", sizeof ((*DAPointer)->sqldaid));
+   (*DAPointer)->sqldabc = (sqlint32)SQLDASIZE(DAsqln);
+   (*DAPointer)->sqln = DAsqln;
+   (*DAPointer)->sqld = 0;
+}
+
+
+
+void alloc_host_vars (struct sqlda *sqldaPointer) {
+   short idx;
+   unsigned int memsize =0;
+   long longmemsize =0;
+   int precision  =0;
+
+   for (idx = 0; idx < sqldaPointer->sqld; idx++) {
+      switch (sqldaPointer->sqlvar[idx].sqltype ) {
+      case SQL_TYP_BLOB:
+      case SQL_TYP_NBLOB:
+      case SQL_TYP_CLOB:
+      case SQL_TYP_NCLOB:
+      case SQL_TYP_DBCLOB:
+      case SQL_TYP_NDBCLOB:
+         longmemsize = GETSQLDALONGLEN(sqldaPointer, idx);
+
+#if defined(DB2WIN)
+         memsize = (unsigned int) (min(longmemsize, 64000));
+         SETSQLDALONGLEN(sqldaPointer, idx, memsize);
+#else
+         memsize = longmemsize;
+#endif
+
+         sqldaPointer->sqlvar[idx].sqldata = (char *SQL_POINTER)
+            malloc (memsize);
+         break;
+      case SQL_TYP_VARCHAR:
+      case SQL_TYP_NVARCHAR:
+      case SQL_TYP_LONG:
+      case SQL_TYP_NLONG:
+      case SQL_TYP_DATE:
+      case SQL_TYP_NDATE:
+      case SQL_TYP_TIME:
+      case SQL_TYP_NTIME:
+      case SQL_TYP_STAMP:
+      case SQL_TYP_NSTAMP:
+         sqldaPointer->sqlvar[idx].sqltype = SQL_TYP_NCSTR;
+         sqldaPointer->sqlvar[idx].sqldata = (char *SQL_POINTER)
+            malloc ((sqldaPointer->sqlvar[idx].sqllen));
+         memsize = (sqldaPointer->sqlvar[idx].sqllen);
+         break;
+      case SQL_TYP_DECIMAL:
+      case SQL_TYP_NDECIMAL:
+         precision = ((char *)&(sqldaPointer->sqlvar[idx].sqllen))[0];
+         sqldaPointer->sqlvar[idx].sqldata = (char *SQL_POINTER)
+            malloc ((precision + 2) /2);
+         memsize = (precision +2) /2;
+         break;
+
+      default:
+         sqldaPointer->sqlvar[idx].sqldata = (char *SQL_POINTER)
+            malloc (sqldaPointer->sqlvar[idx].sqllen);
+         memsize = sqldaPointer->sqlvar[idx].sqllen;
+         break;
+      } 
+
+
+
+      if (sqldaPointer->sqlvar[idx].sqldata == NULL) {
+         fprintf (stderr, "\nalloc host vars: out of memory error.\n");
+         exit (-1);
+      } else {
+         memset (sqldaPointer->sqlvar[idx].sqldata,'\0',memsize);
+      } 
+
+
+            if ( sqldaPointer->sqlvar[idx].sqltype & 1 ) {
+         
+         sqldaPointer->sqlvar[idx].sqlind = (short *)malloc(sizeof(short));
+         
+         if ( sqldaPointer->sqlvar[idx].sqlind == NULL ) {
+            fprintf(stderr, "Out of dynamic memory while "
+               "allocating for your select statement\n") ;
+            exit(-1) ;
+         } else {
+            
+            memset(sqldaPointer->sqlvar[idx].sqldata,'\0',sizeof(short));
+         } 
+      } 
+   } 
+}
+
+void free_da (struct sqlda *sqldaPointer) {
+   short idx;
+   for (idx = 0; idx < sqldaPointer->sqld; idx++) {
+      free (sqldaPointer->sqlvar[idx].sqldata);
+      if (sqldaPointer->sqlvar[idx].sqltype & 1) {
+         free (sqldaPointer->sqlvar[idx].sqlind);
+      }
+   } 
+   free (sqldaPointer);
+}
+
+void print_var (char *ptr, int type, short collen, short datalen) {
+   short idx, ind ;            
+   
+   short bottom, point ;
+   unsigned short top, precision, scale;
+
+   short *iptr;                           
+   char blen;                             
+   sqlint32 *lptr ;                       
+   double *dptr ;                         
+   short maxCollen = max(collen, datalen);
+
+   maxCollen = max(maxCollen, 5);         
+   
+   switch ( type ) {
+      case SQL_TYP_INTEGER:   
+      case SQL_TYP_NINTEGER:  
+         lptr = (sqlint32 *) ptr ;
+         printf("%*ld", maxCollen, (long)*lptr ) ;
+         break ;
+      case SQL_TYP_SMALL:     
+      case SQL_TYP_NSMALL:    
+         iptr = (short *) ptr ;
+         printf("%*d", maxCollen, *iptr ) ;
+         break ;
+      case SQL_TYP_DECIMAL:   
+      case SQL_TYP_NDECIMAL:  
+      
+         precision = ((char *)&(maxCollen))[0];
+         scale = ((char *)&(maxCollen))[1];
+
+
+
+
+
+
+
+
+         if ((precision %2) == 0) precision += 1;
+
+         
+         idx = ( short ) ( precision + 2 ) / 2 ;
+         point = precision - scale ;
+
+         
+         bottom = *(ptr + idx -1) & 0x000F ;   
+         if ( (bottom == 0x000D) || (bottom == 0x000B) ) {
+            printf("-") ;
+         } else {
+            printf(" ") ;
+         }
+
+
+         
+         for (ind=0; ind < idx; ind++) {
+            top = *(ptr + ind) & 0x00F0 ;
+            top = (top >> 4 ) ;
+            bottom = *(ptr + ind) & 0x000F ;
+               if ( point-- == 0 ) printf(".") ;
+               printf("%d", top ) ;
+
+
+
+            if ( ind < idx - 1 ) { 
+               if ( point-- == 0 ) printf(".") ;
+               printf("%d", bottom ) ;
+            }
+         }
+         if ( scale == 0 ) printf(".") ;
+         break ;
+
+      case SQL_TYP_FLOAT:  
+      case SQL_TYP_NFLOAT: 
+         dptr = (double *) ptr ;
+         printf("%*.*e", maxCollen, datalen, *dptr ) ;
+         break ;
+      case SQL_TYP_CHAR:  
+      case SQL_TYP_NCHAR:          printf ("%-*.*s", maxCollen, datalen, ptr);
+         break;
+
+
+      case SQL_TYP_LSTR:  
+      case SQL_TYP_NLSTR: 
+                  blen = *ptr;
+
+         
+         ptr+=sizeof(char);
+         for (idx = 0; (idx < (short)blen) && (idx < maxCollen);
+            idx++)
+            printf("%c",*(ptr + idx) ) ;
+         break ;
+      case SQL_TYP_CSTR:  
+      case SQL_TYP_NCSTR:                   printf ("%-*.*s", maxCollen, datalen, ptr);
+         break ;
+      default:
+         
+         printf("%-*.*s", maxCollen, datalen, "UNKNOWN");
+         break ;
+   }
+   
+   printf (" | ");
+}
+
+
+void display_col_titles (struct sqlda *sqldaPointer) {
+   short sqlvarIndex, numBytes;
+
+   for(sqlvarIndex=0; sqlvarIndex < sqldaPointer->sqld; sqlvarIndex++) {
+      switch (sqldaPointer->sqlvar[sqlvarIndex].sqltype) {
+      case SQL_TYP_DECIMAL:
+      case SQL_TYP_NDECIMAL:
+         numBytes = max (sqldaPointer->sqlvar[sqlvarIndex].sqlname.length,
+            ((char *)&(sqldaPointer->sqlvar[sqlvarIndex].sqllen))[0] + 2);
+         break;
+      case SQL_TYP_BLOB:
+      case SQL_TYP_NBLOB:
+      case SQL_TYP_DBCLOB:
+      case SQL_TYP_NDBCLOB:
+         numBytes = LOBLENGTH;
+         break;
+      case SQL_TYP_CLOB:
+      case SQL_TYP_NCLOB:
+         numBytes = LOBLENGTH;
+         break;
+      case SQL_TYP_GRAPHIC:
+      case SQL_TYP_NGRAPHIC:
+         break;
+      default:
+         numBytes = max (sqldaPointer->sqlvar[sqlvarIndex].sqlname.length,
+            sqldaPointer->sqlvar[sqlvarIndex].sqllen);
+         break;
+      } 
+      print_var (sqldaPointer->sqlvar[sqlvarIndex].sqlname.data,
+         SQL_TYP_CSTR, numBytes,
+         sqldaPointer->sqlvar[sqlvarIndex].sqlname.length);
+   }
+   printf("\n");
+}
+
+void display_da (struct sqlda *sqldaPointer) {
+   short numBytes, sqlvarIndex;
+   struct lob {
+      sqlint32 length;
+      char *data;
+   } *lobPointer;
+
+   
+   for(sqlvarIndex=0;sqlvarIndex < sqldaPointer->sqld; sqlvarIndex++) {
+      numBytes = sqldaPointer->sqlvar[ sqlvarIndex ].sqllen ;
+
+      if ( sqldaPointer->sqlvar[sqlvarIndex].sqltype & 1 &&
+         *(sqldaPointer->sqlvar[sqlvarIndex].sqlind) < 0 ) {
+         
+         switch (sqldaPointer->sqlvar[sqlvarIndex].sqltype) {
+            case SQL_TYP_NBLOB:
+            case SQL_TYP_NDBCLOB:
+               printf ("LOB length = NULL       | ");
+               break;
+            case SQL_TYP_NCLOB:
+               print_var ("NULL CLOB", SQL_TYP_CSTR, LOBLENGTH, LOBLENGTH);
+               break;
+            case SQL_TYP_NGRAPHIC:
+               break;
+            case SQL_TYP_NDECIMAL:
+               numBytes = max (sqldaPointer->sqlvar[sqlvarIndex].sqlname.length,
+                  ((char *)&(sqldaPointer->sqlvar[sqlvarIndex].sqllen))[0] + 2);
+
+               print_var ("-", SQL_TYP_CSTR, numBytes,
+                  sqldaPointer->sqlvar[sqlvarIndex].sqlname.length);
+               break;
+            default:
+               
+               print_var( sqldaPointer->sqlvar[ sqlvarIndex ].sqldata,
+                  sqldaPointer->sqlvar[ sqlvarIndex ].sqltype,
+                  sqldaPointer->sqlvar[sqlvarIndex].sqlname.length,
+                  numBytes);
+               break;
+         } 
+      } else {   
+         switch (sqldaPointer->sqlvar[sqlvarIndex].sqltype) {
+            case SQL_TYP_CLOB:
+            case SQL_TYP_NCLOB:
+            case SQL_TYP_BLOB:
+            case SQL_TYP_NBLOB:
+            case SQL_TYP_DBCLOB:
+            case SQL_TYP_NDBCLOB:
+               lobPointer = (struct lob *)
+                  (sqldaPointer->sqlvar[sqlvarIndex].sqldata);
+               if (*sqldaPointer->sqlvar[sqlvarIndex].sqlind == 0) {
+                  printf ("LOB length = %10ld       | ", lobPointer->length);
+               } else {
+               
+                  printf ("LOB length = %10ld trunc.| ", lobPointer->length);
+               } 
+               break;
+            case SQL_TYP_GRAPHIC:
+            case SQL_TYP_NGRAPHIC:
+               printf ("GRAPHIC length = %5ld | ",
+                  sqldaPointer->sqlvar[sqlvarIndex].sqlname.length);
+               break;
+            default:
+               
+               print_var( sqldaPointer->sqlvar[ sqlvarIndex ].sqldata,
+                  sqldaPointer->sqlvar[ sqlvarIndex ].sqltype,
+                  sqldaPointer->sqlvar[sqlvarIndex].sqlname.length,
+                  numBytes);
+               break;
+         } 
+      } 
+   } 
+   printf("\n") ;
+}
+

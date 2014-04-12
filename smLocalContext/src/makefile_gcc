@@ -1,0 +1,33 @@
+CC      = g++
+INCLUDE = -I ../include 
+LIBS    = -lpthread -lsocket   -lnsl
+OBJECTS = sspublic.o ssnet.o sscontext.o ssanalyze.o
+LDFLAGS = -m64 -g -O2 $(LIBS)
+CFLAGS  = -m64 -g -O2 -D_REENTRANT  $(INCLUDE) -D_THREAD_SAFE
+
+all::  smLocalContext
+	rm -f ../bin/smLocalContext
+	cp smLocalContext ../bin/
+	rm -f *.o smLocalContext
+
+ssnet.o:  ssnet.cpp
+	$(CC) $(CFLAGS) -c -o $@ ssnet.cpp
+
+sscontext.o:  sscontext.cpp
+	$(CC) $(CFLAGS) -c -o $@ sscontext.cpp
+
+sspublic.o:  sspublic.cpp
+	$(CC) $(CFLAGS) -c -o $@ sspublic.cpp
+
+ssanalyze.o:  ssanalyze.cpp
+	$(CC) $(CFLAGS) -c -o $@ ssanalyze.cpp
+
+smLocalContext:  $(OBJECTS)
+	$(CC) $(LDFLAGS) -o $@ $(OBJECTS) $(LIBS)
+
+clean:
+	-rm -f $(OBJECTS)
+
+install: all
+	-rm -f ../../../../bin/c/smLocalContext
+	cp ../bin/smLocalContext ../../../../bin/c/smLocalContext

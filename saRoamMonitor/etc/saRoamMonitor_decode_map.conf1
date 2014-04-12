@@ -1,0 +1,7 @@
+# 设置分拣后的信令属性位置
+# imsi,1 --代表第一个属性为IMSI
+imsi,1
+msisdn,2
+time_stamp,3
+hlr,4
+vlr,5
